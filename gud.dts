@@ -1,0 +1,53 @@
+/*
+ * Device Tree overlay for Noritake GUD display
+ *
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2835";
+
+	fragment@0 {
+		target = <&spi0>;
+		__overlay__ {
+			status = "okay";
+		};
+	};
+
+	fragment@1 {
+		target = <&spi0>;
+		__overlay__ {
+			/* needed to avoid dtc warning */
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			gud: gud@0{
+				compatible = "noritake,gu256x128d";
+				reg = <0>;
+				spi-max-frequency = <650000>;
+        spi-cpol;
+				spi-cpha;
+				dithering = <1>;
+				reset-gpios = <&gpio 17 0>;
+				busy-gpios = <&gpio 27 0>;
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/soc";
+		__overlay__ {
+			backlight: backlight {
+				compatible = "noritake,gu256x128d";
+				status = "okay";
+			};
+		};
+	};
+  
+	__overrides__ {
+		speed = <&gud>,"spi-max-frequency:0";
+		dithering = <&gud>,"dithering:0";
+	};
+};
