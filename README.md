@@ -1,7 +1,11 @@
+
 # Linux DRM driver for Noritake GU-D series displays
+<img src="./kmscube.gif" alt="kmskube" style="width:192px; float: right; border-radius: 6px"/>
+
 - Touchscreen
 - Brightness
 - GPU accelerated rendering
+
 
 *The following installation instructions is intended for Raspberry Pi 4.*
 
