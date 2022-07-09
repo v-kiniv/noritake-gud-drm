@@ -1,6 +1,6 @@
 
 # Linux DRM driver for Noritake GU-D series displays
-<img align="right" src="./kmscube.gif" alt="kmskube" style="width:192px; border-radius: 6px;"/>
+<img align="right" src="./kmscube.gif" alt="kmskube" width="192" style="width:192px; border-radius: 6px;"/>
 
 - Touchscreen
 - Brightness
