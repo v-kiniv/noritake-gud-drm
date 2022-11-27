@@ -654,7 +654,6 @@ static const struct drm_simple_display_pipe_funcs gud_pipe_funcs = {
   .enable = gud_pipe_enable,
   .disable = gud_pipe_disable,
   .update = gud_pipe_update,
-  .prepare_fb = drm_gem_fb_simple_display_pipe_prepare_fb,
 };
 
 static int gud_connector_get_modes(struct drm_connector *connector)
