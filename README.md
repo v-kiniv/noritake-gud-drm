@@ -12,7 +12,7 @@
 ### Get Driver Source
 ```bash
 cd ~
-git clone https://github.com/v-kiniv/noritale-gud-drm.git
+git clone https://github.com/v-kiniv/noritake-gud-drm.git
 cd ~/noritake-gud-drm
 ```
 
