@@ -1,5 +1,4 @@
 #include <linux/module.h>
-#include <linux/dma-buf.h>
 #include <linux/gpio/consumer.h>
 #include <linux/spi/spi.h>
 #include <linux/dev_printk.h>
@@ -20,6 +19,7 @@
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_format_helper.h>
+#include <drm/drm_gem_atomic_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_simple_kms_helper.h>
@@ -27,14 +27,14 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_rect.h>
 
-#define GUD_RX_BUF_SIZE 512
-#define TOUCH_SW_NUM       32
+#define GUD_RX_BUF_SIZE   512
+#define TOUCH_SW_NUM      32
 #define TOUCH_X_MAX       256
 #define TOUCH_Y_MAX       128
 #define ENABLE_BACKLIGHT  1
 #define ENABLE_TOUCH      1
-#define WHITE    0xff
-#define BLACK    0
+#define WHITE             0xff
+#define BLACK             0
 
 #define DATA_WRITE_CMD 0x44
 #define DATA_READ_CMD 0x54
@@ -99,7 +99,7 @@ struct gud_vfd {
   } last_frame;
 };
 
-static struct drm_driver gud_driver = {
+static const struct drm_driver gud_driver = {
   .driver_features  = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
   .fops      = &gud_fops,
   DRM_GEM_CMA_DRIVER_OPS_VMAP,
@@ -451,72 +451,16 @@ static int gud_write_vmem(struct gud_vfd *vfd, struct drm_rect *rect, void *fb_b
   return ret;
 }
 
-static bool gud_calc_damage_rect(u8 *prev, u8 *next, struct drm_rect *rect)
-{
-  unsigned int height = drm_rect_height(rect);
-  unsigned int width = drm_rect_width(rect);
-  struct drm_rect clip = {
-    .x1 = 999, .y1 = 999,
-    .x2 = -1, .y2 = -1,
-  };
-  int x,y = 0;
-  u8 p;
-  u8 n;
-
-  for (x = 0; x < width; x++) {
-    for (y = 0; y < height; y++) {
-      p = prev[width * y + x];
-      n = next[width * y + x];
-
-      if (p != n) {
-        if (x < clip.x1) {
-          clip.x1 = x;
-        }
-        if (x > clip.x2) {
-          clip.x2 = x;
-        }
-
-        if (y < clip.y1) {
-          clip.y1 = y;
-        }
-        if (y > clip.y2) {
-          clip.y2 = y;
-        }
-      }
-    }
-  }
-  if(clip.x1 == 999 && clip.y1 == 999 && clip.x2 == -1 && clip.y2 == -1) {
-    return false;
-  }
-
-  if(clip.x2 <= 252) clip.x2 += 4;
-  if(clip.y2 <= 124) clip.y2 += 4;
-  
-  height = drm_rect_height(&clip);
-  width = drm_rect_width(&clip);
-
-  if(height % 8 != 0) {
-    clip.y2 += 8 - (height % 8);
-    height = drm_rect_height(&clip);
-  }
-
-  memcpy(rect, &clip, sizeof(struct drm_rect));
-  return true;
-}
-
 static void gud_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
 {
   struct drm_gem_cma_object *cma_obj = drm_fb_cma_get_gem_obj(fb, 0);
-  struct dma_buf_attachment *import_attach = cma_obj->base.import_attach;
   struct gud_vfd *vfd = drm_to_vfd(fb->dev);
   struct drm_rect clip;
   unsigned int height = drm_rect_height(rect);
   unsigned int width = drm_rect_width(rect);
   int idx, ret = 0;
   u8 *buf = NULL;
-  bool damage_buf = NULL;
   signed short *convert_buf = NULL;
-  const bool full = width == 256 && height == 128;
 
   if (!vfd->enabled)
     return;
@@ -532,7 +476,7 @@ static void gud_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
   }
 
   if(fb->format->format != DRM_FORMAT_XRGB8888) {
-    dev_info(&vfd->spi->dev, "%s: invalid format (%u)", __func__, 
+    dev_err(&vfd->spi->dev, "%s: invalid format (%u)", __func__, 
               fb->format->format);
     return;
   }
@@ -545,56 +489,32 @@ static void gud_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
     goto out_exit;
   }
 
-  convert_buf = kmalloc_array(fb->width * fb->height, sizeof(signed short),
-                              GFP_KERNEL);
-  if (!convert_buf) {
+  ret = drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE);
+  if (ret)
     goto out_free;
-  }
 
-  if (import_attach) {
-    ret = dma_buf_begin_cpu_access(import_attach->dmabuf,
-                 DMA_FROM_DEVICE);
-    if (ret)
-      goto out_free_inner;
-  }
   drm_fb_xrgb8888_to_gray8(buf, cma_obj->vaddr, fb, &clip);
 
-  if(full && vfd->last_frame.rect.x2 != 0 && vfd->last_frame.rect.y2 != 0) {
-    damage_buf = gud_calc_damage_rect(vfd->last_frame.buf, buf, &clip);
-
-    height = drm_rect_height(&clip);
-    width = drm_rect_width(&clip);
-  }
-
-  if(full) {
-    memcpy(vfd->last_frame.buf, buf, drm_rect_width(rect) * drm_rect_height(rect));
-    memcpy(&vfd->last_frame.rect, rect, sizeof(struct drm_rect));
-  }
-
-  if(damage_buf) {
-    drm_fb_xrgb8888_to_gray8(buf, cma_obj->vaddr, fb, &clip);
-  }
-
-  if (import_attach) {
-  ret = dma_buf_end_cpu_access(import_attach->dmabuf,
-              DMA_FROM_DEVICE);
-    if (ret)
-      goto out_free_inner;
-  }
+  drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
   if(vfd->dithering) {
+    convert_buf = kmalloc_array(fb->width * fb->height, sizeof(signed short),
+                                GFP_KERNEL);
+    if (!convert_buf) {
+      goto out_free;
+    }
     gud_dither(buf, convert_buf, width, height);
+    kfree(convert_buf);
   }
 
   ret = gud_write_vmem(vfd, &clip, buf);
 
-out_free_inner:
-  kfree(convert_buf);
 out_free:
   kfree(buf);
 out_exit:
   drm_dev_exit(idx);
 }
+
 
 static void gud_enable_flush(struct gud_vfd *vfd,
          struct drm_plane_state *plane_state)
@@ -646,8 +566,9 @@ static void gud_pipe_update(struct drm_simple_display_pipe *pipe,
   if (!pipe->crtc.state->active)
     return;
 
-  if (drm_atomic_helper_damage_merged(old_state, state, &rect))
+  if (drm_atomic_helper_damage_merged(old_state, state, &rect)) {
     gud_fb_dirty(state->fb, &rect);
+  }
 }
 
 static const struct drm_simple_display_pipe_funcs gud_pipe_funcs = {

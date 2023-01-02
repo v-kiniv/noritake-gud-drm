@@ -7,7 +7,7 @@
 - GPU accelerated rendering
 
 
-*The following installation instructions is intended for Raspberry Pi 4.*
+*The following installation instructions is intended for Raspberry Pi 4 and Raspbian OS 32 and 64 bit.*
 
 ### Get Driver Source
 ```bash
@@ -16,25 +16,31 @@ git clone https://github.com/v-kiniv/noritake-gud-drm.git
 cd ~/noritake-gud-drm
 ```
 
+### Install build tools and Linux headers
+```bash
+sudo apt install build-essential raspberrypi-kernel-headers
+```
+
 ### Build
 ```bash
 make -j4
 ```
 
+### Install Overlay
+```bash
+sudo dtc -@ -I dts -O dtb -o /boot/overlays/noritake-gud-drm.dtbo ./gud.dts
+```
+
 ### Test
 ```bash
-sudo insmod ~/noritake-gud-drm/gud.ko
+sudo dtoverlay noritake-gud-drm
+sudo insmod ./gud.ko
 ```
+If it's working, proceed with *Install Driver* and *Configure* sections to load driver on boot.
 
 ### Install Driver
 ```bash
 sudo make install
-```
-
-### Install Overlay
-To load the driver automatically on system boot, install overlay.
-```bash
-sudo dtc -@ -I dts -O dtb -o /boot/overlays/noritake-gud-drm.dtbo ./gud.dts
 ```
 
 ### Configure
@@ -55,11 +61,18 @@ Set fixed clock for the GPU to avoid SPI clock exceeding maximum throughput of t
 gpu_freq=250
 ```
 
+### Reboot
+And, finally, reboot device to load the driver:
+```bash
+sudo reboot
+```
+
 ### Mesa
 To enable GPU accelerated rendering, you will also need to build Mesa adapter driver:
 *Adapter driver act as a bridge between Mesa and display driver.*
 
 ```bash
+# make sure you have uncommented deb-src in /etc/apt/sources.list before running apt-get build-dep
 sudo apt-get build-dep mesa
 wget https://archive.mesa3d.org/mesa-20.0.0.tar.xz
 tar xf mesa-20.0.0.tar.xz
@@ -81,11 +94,36 @@ DEFINE_LOADER_DRM_ENTRYPOINT(gud)
 cd mesa-20.0.0/
 meson --prefix="${PWD}/build/install" build/
 ninja -j4 -C build/
+ninja -C build/ install
 ```
 
-4. Install adapter driver:
+4. Install adapter driver
+
+For 32bit OS run:
 ```bash
 sudo cp build/install/lib/arm-linux-gnueabihf/dri/gud_dri.so /lib/arm-linux-gnueabihf/dri/
 ```
 
+For 64bit OS run:
+```bash
+sudo cp build/install/lib/aarch64-linux-gnu/dri/gud_dri.so /lib/aarch64-linux-gnu/dri/
+```
+
+5. Test
+```bash
+sudo apt install kmscube
+kmscube -D /dev/dri/card1
+```
+
+### Console Blank
+Add `consoleblank=600` to `/boot/cmdline.txt` so it looks something like this:
+```txt
+console=serial0,115200 console=tty1 consoleblank=600 root=PARTUUID=a5507f56-02 rootfstype=ext4 fsck.repair=yes rootwait
+```
+
+### Configure Console Font
+```bash
+sudo dpkg-reconfigure console-setup
+```
+Proceed with wizard and select `Termius`->`6x12 (framebuffer only)` font
 
