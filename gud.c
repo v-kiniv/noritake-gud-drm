@@ -80,6 +80,7 @@ struct gud_vfd {
   unsigned int rotation;
   bool   dithering;
   bool   enabled;
+  bool   bl_power_on;
   struct backlight_device *bl_dev;
   struct input_dev    *input_dev;
   struct mutex cmdlock;
@@ -317,6 +318,8 @@ static int gud_blank(struct gud_vfd *vfd, bool on)
   mutex_lock(&vfd->cmdlock);
   write_reg(vfd, 0x1f, 0x28, 0x61, 0x40, on ? 0x00 : 0x01);
   mutex_unlock(&vfd->cmdlock);
+
+  vfd->bl_power_on = !on;
   return 0;
 }
 
@@ -652,17 +655,23 @@ static int update_onboard_backlight(struct backlight_device *bd)
 {
   struct gud_vfd *vfd = bl_get_data(bd);
   int level = bd->props.brightness;
+  dev_info(&vfd->spi->dev, "%s: level=%d, power=%d\n", __func__, level, bd->props.power);
 
-  dev_info(&vfd->spi->dev, "%s: level=%d\n", __func__, level);
+  if (bd->props.power <= FB_BLANK_UNBLANK && !vfd->bl_power_on && vfd->enabled) {
+    return gud_blank(vfd, false);
+  } else if(bd->props.power > FB_BLANK_UNBLANK) {
+    if(vfd->bl_power_on) {
+      return gud_blank(vfd, true);
+    }
+    return 0;
+  }
 
-  if(level < 1 || level > 0x08) {
+  if(level < 1 || level > 8) {
     return 0;
   }
 
   mutex_lock(&vfd->cmdlock);
-
   write_reg(vfd, 0x1f, 'X', level);
-  
   mutex_unlock(&vfd->cmdlock);
 
   return 0;
@@ -681,7 +690,7 @@ static void register_onboard_backlight(struct gud_vfd *vfd)
   };
 
   bl_props.type = BACKLIGHT_RAW;
-  bl_props.power = FB_BLANK_POWERDOWN;
+  bl_props.power = FB_BLANK_UNBLANK;
 
   bd = backlight_device_register("gud",
                &vfd->spi->dev, vfd, &bl_ops,
@@ -692,6 +701,7 @@ static void register_onboard_backlight(struct gud_vfd *vfd)
       PTR_ERR(bd));
     return;
   }
+  int level = bd->props.brightness;
   vfd->bl_dev = bd;
 }
 #else
