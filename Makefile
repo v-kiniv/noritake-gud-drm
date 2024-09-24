@@ -8,6 +8,9 @@ KDIR ?= "/lib/modules/$(shell uname -r)/build"
 all:
 	$(MAKE) -C $(KDIR) M="$(CURDIR)" modules
 
+debug:
+	$(MAKE) -C $(KDIR) M="$(CURDIR)" modules EXTRA_CFLAGS="-g -DDEBUG"
+
 install:
 	$(MAKE) -C $(KDIR) M="$(CURDIR)" modules_install
 	depmod -A

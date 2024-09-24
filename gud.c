@@ -110,12 +110,12 @@ static const struct drm_driver gud_driver = {
   .minor      = 0,
 };
 
-static void gud_wait_busy(struct gud_vfd *vfd)
+static bool gud_wait_busy(struct gud_vfd *vfd)
 {
   int i;
 
   if(!vfd->busy) {
-    return;
+    return true;
   }
 
   for (i = 100; i > 0; i--) {
@@ -127,13 +127,17 @@ static void gud_wait_busy(struct gud_vfd *vfd)
 
   if (!i) {
     dev_err(&vfd->spi->dev, "%s busy timeout", __func__);
+    return false;
   }
+
+  return true;
 }
 
-static u8 gud_available(struct gud_vfd *vfd)
+static int gud_available(struct gud_vfd *vfd)
 {
   u8 txbuf[8] = { 0 };
   u8 rxbuf[8] = { 0 };
+  int len = -1;
   int res = 0;
 
   struct spi_transfer t = {
@@ -147,27 +151,35 @@ static u8 gud_available(struct gud_vfd *vfd)
   txbuf[0] = STATUS_READ_CMD;
 
   if (!vfd->spi) {
-    dev_err(&vfd->spi->dev, "%s: vfd->spi is unexpectedly NULL\n", __func__);
     return -1;
   }
 
   spi_message_init(&m);
   spi_message_add_tail(&t, &m);
 
-  gud_wait_busy(vfd);
+  if(!gud_wait_busy(vfd)) {
+    return -1;
+  }
   res = spi_sync(vfd->spi, &m);
-  if(res < 0) {
-    dev_err(&vfd->spi->dev, "%s: spi_sync returned %d\n", __func__, res);
-    return 0;
+  
+  // 6th bit should be 0, invliad status otherwise
+  if(res < 0 || (rxbuf[6] & 0x40)) { 
+    return -1;
   }
 
-  return rxbuf[6];
+  len = rxbuf[6] & 0x3F; // only lower 5 bits is used to indicate transmit data len
+  if(len < 0 || len > 63) {
+    dev_err(&vfd->spi->dev, "%s: illegal transmit data len: %d\n", __func__, len);
+    return -1;
+  }
+
+  return len;
 }
 
-static int gud_read(struct gud_vfd *vfd, void *buf, size_t len)
+static int gud_read(struct gud_vfd *vfd, void *buf, int len)
 {
-  u8 txbuf[256] = { 0 };
-  u8 rxbuf[256] = { 0 };
+  u8 txbuf[64] = { 0 };
+  u8 rxbuf[64] = { 0 };
   int res = 0;
 
   struct spi_transfer t = {
@@ -178,20 +190,25 @@ static int gud_read(struct gud_vfd *vfd, void *buf, size_t len)
   };
   struct spi_message m;
 
+  if(len < 1 || len > 63) {
+    dev_err(&vfd->spi->dev, "%s: illegal read len: %d\n", __func__, len);
+    return -1;
+  }
+
   txbuf[0] = DATA_READ_CMD;
 
   if (!vfd->spi) {
-    dev_err(&vfd->spi->dev, "%s: vfd->spi is unexpectedly NULL\n", __func__);
     return -1;
   }
 
   spi_message_init(&m);
   spi_message_add_tail(&t, &m);
 
-  gud_wait_busy(vfd);
+  if(!gud_wait_busy(vfd)) {
+    return -1;
+  }
   res = spi_sync(vfd->spi, &m);
   if(res < 0) {
-    dev_err(&vfd->spi->dev, "%s: spi_sync returned %d\n", __func__, res);
     return -1;
   }
 
@@ -209,7 +226,7 @@ static int gud_write(struct gud_vfd *vfd, void *buf, size_t len)
   struct spi_transfer t = {
     .tx_buf = txbuf,
     .len = len + 1,
-    .speed_hz = len < 100 ? vfd->spi->max_speed_hz : 660000,
+    .speed_hz = vfd->spi->max_speed_hz,
   };
   struct spi_message m;
 
@@ -226,8 +243,10 @@ static int gud_write(struct gud_vfd *vfd, void *buf, size_t len)
 
   spi_message_init(&m);
   spi_message_add_tail(&t, &m);
-
-  gud_wait_busy(vfd);
+  
+  if(!gud_wait_busy(vfd)) {
+    return -1;
+  }
   res = spi_sync(vfd->spi, &m);
 
   return res;
@@ -256,20 +275,19 @@ static int gud_write_register(struct gud_vfd *vfd, int len, ...)
 static int gud_read_display_status(struct gud_vfd *vfd) {
   uint32_t status = 0;
   uint8_t *rx = vfd->rx_buf;
-  uint8_t len = 0;
+  int len = 0;
 
   memset(rx, 0, GUD_RX_BUF_SIZE);
 
   // Display status send, a = 0x30 (Product type information)
   write_reg(vfd, 0x1f, 0x28, 0x65, 0x40, 0x30);
   len = gud_available(vfd);
-  gud_read(vfd, rx, len);
 
   // check for valid header
-  if(rx[0] == 0x28 && rx[1] == 0x65 && rx[2] == 0x40 && len > 4) {
+  if(len == 18 && gud_read(vfd, rx, len) == 0 && rx[0] == 0x28 && rx[1] == 0x65 && rx[2] == 0x40) {
     dev_info(&vfd->spi->dev, "%s: product type: %*s", __func__, 15, &rx[3]);
   } else {
-    dev_err(&vfd->spi->dev, "%s: invalid header 0x%02x", __func__, rx[0]);
+    dev_err(&vfd->spi->dev, "%s: invalid response (len: %d)", __func__, len);
     status = -1;
   }
 
@@ -717,34 +735,29 @@ static void gud_setup_touch_input(struct gud_vfd *vfd)
 }
 
 static int64_t gud_read_touch_status(struct gud_vfd *vfd) {
-  uint32_t status = 0;
+  int64_t status = -1;
   uint8_t *rx = vfd->rx_buf;
-  uint8_t len = 0;
+  int len = 0;
   bool valid = false;
 
   mutex_lock(&vfd->cmdlock);
-
   memset(rx, 0, GUD_RX_BUF_SIZE);
 
-  write_reg(vfd, 0x1f, 0x4b, 0x10);
-  len = gud_available(vfd);
-  gud_read(vfd, rx, len);
-
-  if(rx[0] == 0x10 && rx[1] == 4 && len == 6) {
-    status =  (rx[2] <<  24)  |
-              (rx[3] <<  16)  |
-              (rx[4] <<  8)   |
-              (rx[5] <<  0);
-    valid = true;
+  if(write_reg(vfd, 0x1f, 0x4b, 0x10) == 0) {
+    len = gud_available(vfd);
+    if(len > 0 && gud_read(vfd, rx, len) == 0) {
+      if(len == 6 && rx[0] == 0x10 && rx[1] == 4) {
+        status =  (rx[2] <<  24)  |
+                  (rx[3] <<  16)  |
+                  (rx[4] <<  8)   |
+                  (rx[5] <<  0);
+        valid = true;
+      }
+    }
   }
 
   mutex_unlock(&vfd->cmdlock);
-
-  if(valid) {
-    return status;
-  }
-
-  return -1;
+  return status;
 }
 
 static void gud_poll_touch(struct gud_vfd *vfd)
@@ -872,7 +885,7 @@ static int gud_probe_spi(struct spi_device *spi)
   write_reg(vfd, 0x1f, 0x4b, 0x70, 0x00, 0x02); // configure touch sensitivity
   write_reg(vfd, 0x1f, 0x4b, 0x70, 0x01, 0x01); // configure touch ON decision
   write_reg(vfd, 0x1f, 0x4b, 0x70, 0x02, 0x01); // configure touch OFF decision
-  write_reg(vfd, 0x1f, 0x4b, 0x70, 0x03, 0x00); // configure touch OFF decision
+  write_reg(vfd, 0x1f, 0x4b, 0x70, 0x03, 0x00); // configure calibration period
   mutex_unlock(&vfd->cmdlock);
   
   register_onboard_backlight(vfd);
@@ -930,7 +943,7 @@ static int gud_probe_spi(struct spi_device *spi)
   return 0;
 }
 
-static int gud_remove(struct spi_device *spi)
+static void gud_remove(struct spi_device *spi)
 {
   struct drm_device *drm = spi_get_drvdata(spi);
   struct gud_vfd *vfd = drm_to_vfd(drm);
@@ -947,9 +960,6 @@ static int gud_remove(struct spi_device *spi)
   #ifdef ENABLE_TOUCH
   cancel_work_sync(&vfd->poll_work);
   #endif
-
-  return 0;
-
 }
 
 static void gud_shutdown(struct spi_device *spi)
