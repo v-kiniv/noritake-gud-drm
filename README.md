@@ -71,6 +71,8 @@ sudo reboot
 To enable GPU accelerated rendering, you will also need to build Mesa adapter driver:
 *Adapter driver act as a bridge between Mesa and display driver.*
 
+UPD: as of kernel 6.6 and Mesa 23 this is not required, but when you run an OpenGL application, MESA will complain about missing `gud_dri.so`.
+
 ```bash
 # make sure you have uncommented deb-src in /etc/apt/sources.list before running apt-get build-dep
 sudo apt-get build-dep mesa
@@ -127,3 +129,25 @@ sudo dpkg-reconfigure console-setup
 ```
 Proceed with wizard and select `Termius`->`6x12 (framebuffer only)` font
 
+### Backlight / Display Power
+Create udev rules to be able to change display brightness and power without sudo
+```bash
+echo 'SUBSYSTEM=="backlight",RUN+="/bin/chmod 666 /sys/class/backlight/%k/brightness /sys/class/backlight/%k/bl_power"' | sudo tee -a /etc/udev/rules.d/backlight-permissions.rules
+```
+
+Now you can control brightness by writing to the `/brightness`. Valid values are are 1 through 8.
+```bash
+# min brightness
+echo 1 > /sys/class/backlight/gud/brightness
+
+# max brightness
+echo 8 > /sys/class/backlight/gud/brightness
+```
+And power by writing to the `/bl_power`
+```bash
+# power OFF
+echo 4 > /sys/class/backlight/gud/bl_power
+
+# power ON
+echo 0 > /sys/class/backlight/gud/bl_power
+```
