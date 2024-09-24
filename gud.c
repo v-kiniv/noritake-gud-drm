@@ -13,9 +13,9 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_atomic_helper.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_fb_helper.h>
-#include <drm/drm_gem_cma_helper.h>
+#include <drm/drm_fb_dma_helper.h>
+#include <drm/drm_fbdev_generic.h>
+#include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_damage_helper.h>
 #include <drm/drm_format_helper.h>
@@ -68,7 +68,7 @@ static const uint32_t gud_formats[] = {
   DRM_FORMAT_XRGB8888,
 };
 
-DEFINE_DRM_GEM_CMA_FOPS(gud_fops);
+DEFINE_DRM_GEM_DMA_FOPS(gud_fops);
 
 struct gud_vfd {
   struct drm_display_mode mode;
@@ -102,7 +102,7 @@ struct gud_vfd {
 static const struct drm_driver gud_driver = {
   .driver_features  = DRIVER_GEM | DRIVER_MODESET | DRIVER_ATOMIC,
   .fops      = &gud_fops,
-  DRM_GEM_CMA_DRIVER_OPS_VMAP,
+  DRM_GEM_DMA_DRIVER_OPS_VMAP,
   .name      = "gud",
   .desc      = "Noritake dot matrix VFD displays",
   .date      = "20210405",
@@ -453,8 +453,10 @@ static int gud_write_vmem(struct gud_vfd *vfd, struct drm_rect *rect, void *fb_b
 
 static void gud_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
 {
-  struct drm_gem_cma_object *cma_obj = drm_fb_cma_get_gem_obj(fb, 0);
+  struct drm_gem_dma_object *dma_obj = drm_fb_dma_get_gem_obj(fb, 0);
   struct gud_vfd *vfd = drm_to_vfd(fb->dev);
+  unsigned int dst_pitch = 0;
+  struct iosys_map dst, vmap;
   struct drm_rect clip;
   unsigned int height = drm_rect_height(rect);
   unsigned int width = drm_rect_width(rect);
@@ -493,7 +495,9 @@ static void gud_fb_dirty(struct drm_framebuffer *fb, struct drm_rect *rect)
   if (ret)
     goto out_free;
 
-  drm_fb_xrgb8888_to_gray8(buf, cma_obj->vaddr, fb, &clip);
+  iosys_map_set_vaddr(&dst, buf);
+	iosys_map_set_vaddr(&vmap, dma_obj->vaddr);
+  drm_fb_xrgb8888_to_gray8(&dst, &dst_pitch, &vmap, fb, &clip);
 
   drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
 
